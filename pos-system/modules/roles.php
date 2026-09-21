@@ -1,0 +1,235 @@
+<?php
+session_start();
+require_once '../config/database.php';
+
+if (!isset($_SESSION['user_id'])) {
+    header('Location: ' . BASE_PATH . 'login.php');
+    exit();
+}
+
+if (!hasPermission('manage_roles')) {
+    logActivity("Access denied: roles.php - User: " . $_SESSION['username']);
+    header('Location: ' . BASE_PATH . 'index.php?error=access_denied');
+    exit();
+}
+
+$db = getDB();
+
+$success_message = null;
+$error_message = null;
+
+if ($_SERVER['REQUEST_METHOD'] == 'POST') verify_csrf();
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['add_role'])) {
+    $role_name = sanitize($_POST['role_name']);
+    $description = sanitize($_POST['description']);
+    
+    try {
+        $stmt = $db->prepare("INSERT INTO roles (role_name, description) VALUES (?, ?)");
+        $stmt->execute([$role_name, $description]);
+        $success_message = "Role <strong>{$role_name}</strong> created successfully!";
+        logActivity("Created role: {$role_name}");
+    } catch(PDOException $e) {
+        $error_message = "Error: " . $e->getMessage();
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['assign_permissions'])) {
+    $role_id = (int)$_POST['role_id'];
+    $permissions = $_POST['permissions'] ?? [];
+    
+    try {
+        $db->prepare("DELETE FROM role_permissions WHERE role_id = ?")->execute([$role_id]);
+        
+        foreach ($permissions as $perm_id) {
+            $stmt = $db->prepare("INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?)");
+            $stmt->execute([$role_id, $perm_id]);
+        }
+        
+        $db->commit();
+        $success_message = "Permissions updated successfully!";
+        logActivity("Updated permissions for role ID: {$role_id}");
+    } catch(PDOException $e) {
+        $error_message = "Error: " . $e->getMessage();
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD']==='POST' && isset($_POST['delete_role'])) {
+    try {
+        require_permission('manage_roles');
+        $id=(int)($_POST['role_id']??0);
+        if($id<=0||$id===1) throw new Exception('Invalid or protected role.');
+        $cnt=$db->prepare('SELECT COUNT(*) FROM users WHERE role_id=?');$cnt->execute([$id]);
+        if((int)$cnt->fetchColumn()>0) throw new Exception('Cannot delete a role assigned to users. Reassign those users first.');
+        $db->prepare('DELETE FROM role_permissions WHERE role_id=?')->execute([$id]);
+        $db->prepare('DELETE FROM roles WHERE id=?')->execute([$id]);
+        header('Content-Type: application/json');echo json_encode(['success'=>true,'message'=>'Role deleted successfully!']);exit();
+    } catch(Throwable $e){header('Content-Type: application/json');echo json_encode(['success'=>false,'message'=>$e->getMessage()]);exit();}
+}
+
+$roles = $db->query("SELECT * FROM roles")->fetchAll();
+$permissions = $db->query("SELECT * FROM permissions ORDER BY module")->fetchAll();
+?>
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light" data-pos-theme="light" data-pos-palette="indigo">
+<head>
+<script>
+(function(){try{var t=localStorage.getItem('pos_theme');var p=localStorage.getItem('pos_palette');if(t==='dark'||t==='light')document.documentElement.setAttribute('data-pos-theme',t);if(['indigo','blue','emerald','violet','rose','amber'].indexOf(p)!==-1)document.documentElement.setAttribute('data-pos-palette',p);}catch(e){}})();
+</script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Role Management</title>
+    <link href="<?php echo BASE_PATH; ?>assets/vendor/bootstrap/bootstrap.min.css?v=20260913" rel="stylesheet">
+    <link rel="stylesheet" href="<?php echo BASE_PATH; ?>assets/vendor/fontawesome/all.min.css?v=20260913">
+    <link rel="stylesheet" href="<?php echo BASE_PATH; ?>assets/css/custom.css?v=20260913">
+</head>
+<body>
+    <?php include BASE_PATH . 'includes/header.php'; ?>
+    
+    <div class="d-flex">
+        <?php include BASE_PATH . 'includes/sidebar.php'; ?>
+        
+        <div class="main-content flex-grow-1 p-4">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h4 class="mb-0"><i class="fas fa-user-tag me-2 text-primary"></i> Role Management</h4>
+            </div>
+            
+            <?php if (isset($success_message)): ?>
+                <div id="flash-message" data-type="success" data-message="<?php echo htmlspecialchars($success_message); ?>"></div>
+            <?php endif; ?>
+            <?php if (isset($error_message)): ?>
+                <div id="flash-message" data-type="error" data-message="<?php echo htmlspecialchars($error_message); ?>"></div>
+            <?php endif; ?>
+            
+            <div class="card border-0 shadow-sm mb-4">
+                <div class="card-header bg-transparent">
+                    <h5 class="mb-0"><i class="fas fa-plus-circle me-2 text-primary"></i> Create New Role</h5>
+                </div>
+                <div class="card-body">
+                    <form method="POST">
+                        <?php echo csrf_field(); ?>
+                        <div class="row g-3">
+                            <div class="col-md-5">
+                                <label class="form-label">Role Name</label>
+                                <input type="text" name="role_name" class="form-control" required placeholder="e.g. Manager">
+                            </div>
+                            <div class="col-md-5">
+                                <label class="form-label">Description</label>
+                                <input type="text" name="description" class="form-control" placeholder="Brief description">
+                            </div>
+                            <div class="col-md-2 d-flex align-items-end">
+                                <button type="submit" name="add_role" class="btn btn-primary w-100">
+                                    <i class="fas fa-plus-circle me-1"></i> Create
+                                </button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            
+            <?php foreach($roles as $role): ?>
+            <div class="card border-0 shadow-sm mb-4" id="role-card-<?php echo $role['id']; ?>">
+                <div class="card-header bg-transparent d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <i class="fas fa-user-cog me-2 text-primary"></i> 
+                        <?php echo $role['role_name']; ?>
+                        <?php if ($role['id'] > 1): ?>
+                        <button class="btn btn-sm btn-danger delete-role" data-id="<?php echo $role['id']; ?>" data-name="<?php echo $role['role_name']; ?>">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                        <?php endif; ?>
+                    </h5>
+                    <span class="text-muted small"><?php echo $role['description']; ?></span>
+                </div>
+                <div class="card-body">
+                    <button type="button" class="btn btn-outline-primary btn-sm mb-3 permission-toggle" data-target="perm-panel-<?php echo $role['id']; ?>"><i class="fas fa-sliders me-1"></i> Manage Permissions</button>
+                    <div class="small text-muted mb-3"><i class="fas fa-lock me-1"></i> Permission switches are hidden until you explicitly open this role.</div>
+                    <form method="POST" id="perm-panel-<?php echo $role['id']; ?>" class="permission-panel d-none">
+                        <?php echo csrf_field(); ?>
+                        <input type="hidden" name="role_id" value="<?php echo $role['id']; ?>">
+                        <div class="row">
+                            <?php 
+                            $currentPerms = $db->prepare("SELECT permission_id FROM role_permissions WHERE role_id = ?");
+                            $currentPerms->execute([$role['id']]);
+                            $rolePerms = $currentPerms->fetchAll(PDO::FETCH_COLUMN);
+                            
+                            foreach($permissions as $perm): 
+                            ?>
+                            <div class="col-md-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="permissions[]" 
+                                           value="<?php echo $perm['id']; ?>"
+                                           id="perm-<?php echo $role['id']; ?>-<?php echo $perm['id']; ?>"
+                                           <?php echo in_array($perm['id'], $rolePerms) ? 'checked' : ''; ?>>
+                                    <label class="form-check-label" for="perm-<?php echo $role['id']; ?>-<?php echo $perm['id']; ?>">
+                                        <?php echo $perm['permission_name']; ?>
+                                        <small class="text-muted d-block"><?php echo $perm['module']; ?></small>
+                                    </label>
+                                </div>
+                            </div>
+                            <?php endforeach; ?>
+                        </div>
+                        <div class="mt-3">
+                            <button type="submit" name="assign_permissions" class="btn btn-primary btn-sm">
+                                <i class="fas fa-save me-1"></i> Update Permissions
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            <?php endforeach; ?>
+        </div>
+    </div>
+
+    <script src="<?php echo BASE_PATH; ?>assets/vendor/sweetalert2/sweetalert2.all.min.js?v=20260913"></script>
+    <script src="<?php echo BASE_PATH; ?>assets/vendor/bootstrap/bootstrap.bundle.min.js?v=20260913"></script>
+    <script src="<?php echo BASE_PATH; ?>assets/js/script.js?v=20260913"></script>
+    
+    <script>
+        document.querySelectorAll('.permission-toggle').forEach(btn=>btn.addEventListener('click',()=>{
+            const panel=document.getElementById(btn.dataset.target);
+            panel.classList.toggle('d-none');
+            btn.innerHTML=panel.classList.contains('d-none')?'<i class="fas fa-sliders me-1"></i> Manage Permissions':'<i class="fas fa-eye-slash me-1"></i> Hide Permissions';
+        }));
+
+        document.querySelectorAll('.delete-role').forEach(button => {
+            button.addEventListener('click', function(e) {
+                e.stopPropagation();
+                const id = this.dataset.id;
+                const name = this.dataset.name;
+                
+                confirmDelete(`Role "${name}" will be permanently deleted!`, function() {
+                    Swal.fire({
+                        title: 'Deleting...',
+                        text: 'Please wait',
+                        allowOutsideClick: false,
+                        showConfirmButton: false,
+                        didOpen: () => Swal.showLoading()
+                    });
+                    
+                    fetch('',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({delete_role:'1',role_id:id,csrf_token:'<?php echo h(csrf_token()); ?>'})})
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                Swal.fire({
+                                    icon: 'success',
+                                    title: 'Deleted!',
+                                    text: data.message,
+                                    timer: 2000,
+                                    timerProgressBar: true,
+                                    showConfirmButton: true,
+                                    confirmButtonColor: '#198754',
+                                    confirmButtonText: 'OK'
+                                }).then(() => {
+                                    document.getElementById(`role-card-${id}`).remove();
+                                });
+                            } else {
+                                showError(data.message);
+                            }
+                        })
+                        .catch(() => showError('Error deleting role!'));
+                });
+            });
+        });
+    </script>
+</body>
+</html>

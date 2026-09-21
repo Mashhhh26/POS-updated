@@ -1,0 +1,30 @@
+<?php
+session_start(); require_once '../../config/database.php'; require_permission('manage_job_postings'); verify_csrf(); $db=getDB(); $msg=$err=null;
+if($_SERVER['REQUEST_METHOD']==='POST'){
+ try{
+  $action=$_POST['action']??'';
+  if($action==='save'){
+   $id=(int)($_POST['id']??0);$title=trim($_POST['title']??'');$dept=trim($_POST['department']??'');$type=trim($_POST['employment_type']??'Full-time');$loc=trim($_POST['location']??'');$desc=trim($_POST['description']??'');$req=trim($_POST['requirements']??'');$status=$_POST['status']??'draft';
+   if($title===''||$desc==='')throw new Exception('Title and description are required.');
+   if(!in_array($status,['draft','published','closed'],true))$status='draft';
+   if($id)$db->prepare("UPDATE job_postings SET title=?,department=?,employment_type=?,location=?,description=?,requirements=?,status=? WHERE id=?")->execute([$title,$dept,$type,$loc,$desc,$req,$status,$id]);
+   else $db->prepare("INSERT INTO job_postings(title,department,employment_type,location,description,requirements,status,created_by) VALUES(?,?,?,?,?,?,?,?)")->execute([$title,$dept,$type,$loc,$desc,$req,$status,$_SESSION['user_id']]);
+   $msg='Job posting saved.';
+  }elseif($action==='delete'){
+   $id=(int)$_POST['id'];$db->prepare("DELETE FROM job_postings WHERE id=?")->execute([$id]);$msg='Job posting deleted.';
+  }
+ }catch(Throwable $e){$err=$e->getMessage();}
+}
+$jobs=$db->query("SELECT * FROM job_postings ORDER BY created_at DESC")->fetchAll();
+?>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Job Postings</title>
+<link rel="stylesheet" href="<?php echo BASE_PATH;?>assets/vendor/bootstrap/bootstrap.min.css"><link rel="stylesheet" href="<?php echo BASE_PATH;?>assets/vendor/fontawesome/all.min.css"><link rel="stylesheet" href="<?php echo BASE_PATH;?>assets/css/custom.css"></head><body>
+<?php include BASE_PATH.'includes/header.php';?><div class="d-flex"><?php include BASE_PATH.'includes/sidebar.php';?><main class="main-content flex-grow-1 p-4">
+<div class="d-flex justify-content-between align-items-center mb-4"><h4><i class="fas fa-briefcase me-2"></i>Job Postings</h4><button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#jobModal">New Job</button></div>
+<?php if($msg):?><div id="flash-message" data-type="success" data-message="<?php echo h($msg);?>"></div><?php endif;?><?php if($err):?><div id="flash-message" data-type="error" data-message="<?php echo h($err);?>"></div><?php endif;?>
+<div class="row g-3"><?php foreach($jobs as $j):?><div class="col-md-6"><div class="card border-0 h-100"><div class="card-body"><div class="d-flex justify-content-between"><span class="badge bg-<?php echo $j['status']==='published'?'success':($j['status']==='closed'?'secondary':'warning');?>"><?php echo ucfirst($j['status']);?></span><span class="small text-muted"><?php echo h($j['employment_type']);?></span></div><h5 class="mt-3"><?php echo h($j['title']);?></h5><div class="text-muted small"><?php echo h($j['department']);?> · <?php echo h($j['location']);?></div><p class="mt-3"><?php echo nl2br(h($j['description']));?></p><div class="d-flex gap-2"><button class="btn btn-sm btn-outline-primary edit-job" data-job="<?php echo h(json_encode($j,JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT));?>">Edit</button><form method="post"><input type="hidden" name="csrf_token" value="<?php echo h(csrf_token());?>"><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="<?php echo $j['id'];?>"><button class="btn btn-sm btn-outline-danger">Delete</button></form></div></div></div></div><?php endforeach;?></div>
+</main></div>
+<div class="modal fade" id="jobModal"><div class="modal-dialog modal-lg"><div class="modal-content"><form method="post"><div class="modal-header"><h5>Job Posting</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><?php echo csrf_field();?><input type="hidden" name="action" value="save"><input type="hidden" name="id" id="job_id"><div class="row g-3"><div class="col-md-8"><label class="form-label">Title</label><input id="job_title" name="title" class="form-control" required></div><div class="col-md-4"><label class="form-label">Status</label><select id="job_status" name="status" class="form-select"><option>draft</option><option>published</option><option>closed</option></select></div><div class="col-md-6"><label class="form-label">Department</label><input id="job_department" name="department" class="form-control"></div><div class="col-md-3"><label class="form-label">Type</label><select id="job_type" name="employment_type" class="form-select"><option>Full-time</option><option>Part-time</option><option>Contract</option><option>Internship</option></select></div><div class="col-md-3"><label class="form-label">Location</label><input id="job_location" name="location" class="form-control"></div><div class="col-12"><label class="form-label">Description</label><textarea id="job_description" name="description" class="form-control" rows="4" required></textarea></div><div class="col-12"><label class="form-label">Requirements</label><textarea id="job_requirements" name="requirements" class="form-control" rows="4"></textarea></div></div></div><div class="modal-footer"><button class="btn btn-primary">Save Job</button></div></form></div></div></div>
+<script src="<?php echo BASE_PATH;?>assets/vendor/bootstrap/bootstrap.bundle.min.js"></script><script src="<?php echo BASE_PATH;?>assets/vendor/sweetalert2/sweetalert2.all.min.js"></script><script src="<?php echo BASE_PATH;?>assets/js/script.js"></script>
+<script>document.querySelectorAll('.edit-job').forEach(b=>b.onclick=()=>{let j=JSON.parse(b.dataset.job);Object.entries({id:j.id,title:j.title,department:j.department,type:j.employment_type,location:j.location,description:j.description,requirements:j.requirements,status:j.status}).forEach(([k,v])=>{let el=document.getElementById('job_'+k);if(el)el.value=v||''});new bootstrap.Modal(document.getElementById('jobModal')).show();});</script>
+</body></html>
